@@ -22,10 +22,19 @@ def initialize_session_state():
         st.session_state.user_answers = {}
     if 'last_selection' not in st.session_state:
         st.session_state.last_selection = None
+    if 'quiz_mode' not in st.session_state:
+        st.session_state.quiz_mode = 'End-of-Quiz' # 'End-of-Quiz' or 'Immediate-Feedback'
+    if 'show_feedback' not in st.session_state:
+        st.session_state.show_feedback = False
+    if 'score' not in st.session_state:
+        st.session_state.score = 0
+    if 'attempted' not in st.session_state:
+        st.session_state.attempted = 0
+
 
 # --- Callback Functions ---
 
-def start_quiz(selected_chapters, question_count):
+def start_quiz(selected_chapters, question_count, quiz_mode):
     """
     Called when the 'Start Quiz' button is pressed.
     Gathers questions, shuffles them, and transitions to the quiz page.
@@ -44,7 +53,6 @@ def start_quiz(selected_chapters, question_count):
         return
 
     # 2. Select the specified number of questions randomly
-    # Ensure we don't try to sample more questions than available
     count = min(question_count, len(all_questions))
     st.session_state.quiz_questions = random.sample(all_questions, count)
 
@@ -53,43 +61,69 @@ def start_quiz(selected_chapters, question_count):
     st.session_state.user_answers = {}
     st.session_state.quiz_length = len(st.session_state.quiz_questions)
     st.session_state.selected_chapters = selected_chapters
+    st.session_state.quiz_mode = quiz_mode
+    st.session_state.show_feedback = False
+    st.session_state.score = 0
+    st.session_state.attempted = 0
     st.session_state.page = "quiz"
 
 def record_answer():
-    """
-    Records the user's selected answer and updates the current index.
-    Called by the 'Next Question' or 'Show Results' button.
-    """
+    """Records the user's selected answer and shows feedback (if immediate mode)."""
     current_q_index = st.session_state.current_index
     
-    # Check if the user selected an answer for the current question
+    # Check if the user selected an answer
     if st.session_state.last_selection is None:
         st.warning("Please select an answer before proceeding.")
         return
         
     # Record the answer
     st.session_state.user_answers[current_q_index] = st.session_state.last_selection
-
-    # Clear the selection for the next question
-    st.session_state.last_selection = None
     
-    # 1. Move to the next question OR
-    if current_q_index < st.session_state.quiz_length - 1:
+    if st.session_state.quiz_mode == 'Immediate-Feedback':
+        # Show feedback for the current question
+        st.session_state.show_feedback = True
+        
+        # Update score immediately for display purposes
+        current_q = st.session_state.quiz_questions[current_q_index]
+        is_correct = (st.session_state.last_selection == current_q["correct_answer"])
+        
+        # Only update the score if it hasn't been attempted yet (to prevent re-scoring)
+        if current_q_index not in st.session_state.attempted_questions:
+            st.session_state.attempted_questions[current_q_index] = True
+            st.session_state.attempted += 1
+            if is_correct:
+                st.session_state.score += 1
+
+    else:
+        # End-of-Quiz mode: just advance to the next question/results
+        advance_question()
+
+def advance_question():
+    """Advances the current index or moves to the results page."""
+    current_q_index = st.session_state.current_index
+    quiz_length = st.session_state.quiz_length
+    
+    # Clear feedback and selection for the next question
+    st.session_state.show_feedback = False
+    st.session_state.last_selection = None
+
+    if current_q_index < quiz_length - 1:
         st.session_state.current_index += 1
-    # 2. Transition to the results page
     else:
         st.session_state.page = "results"
+
 
 def restart_quiz():
     """Resets the application back to the setup page."""
     initialize_session_state()
     st.session_state.page = "setup"
     st.session_state.current_index = 0
+    st.session_state.attempted_questions = {} # Reset specific tracking for immediate mode
 
 # --- UI Rendering Functions ---
 
 def render_setup_page():
-    """Renders the chapter selection and quiz length setup UI."""
+    """Renders the chapter selection, quiz length, and mode setup UI."""
     st.title("🧠 AI Concepts Quiz App")
     st.markdown("---")
 
@@ -104,10 +138,20 @@ def render_setup_page():
         key="setup_chapter_select"
     )
 
+    # Quiz Mode selection
+    st.subheader("2. Select Quiz Mode")
+    quiz_mode = st.radio(
+        "How do you want to receive feedback?",
+        options=['End-of-Quiz', 'Immediate-Feedback'],
+        index=0 if st.session_state.quiz_mode == 'End-of-Quiz' else 1,
+        key="setup_quiz_mode",
+        help="End-of-Quiz: Results shown only after the last question. Immediate-Feedback: Results shown right after you answer each question."
+    )
+    
     # Question count slider
     max_questions = sum(len(QA_DATA.get(c, [])) for c in chapters_selection)
     
-    st.subheader(f"2. Choose Quiz Length (Max: {max_questions})")
+    st.subheader(f"3. Choose Quiz Length (Max: {max_questions})")
     
     # Set default slider value based on previous session state or a sensible default
     initial_count = st.session_state.question_count
@@ -132,15 +176,18 @@ def render_setup_page():
     st.button(
         "Start Quiz",
         on_click=start_quiz,
-        args=(chapters_selection, question_count),
+        args=(chapters_selection, question_count, quiz_mode),
         use_container_width=True,
         type="primary"
     )
 
 
 def render_quiz_page():
-    """Renders the current question and answer options."""
+    """Renders the current question and answer options based on the selected mode."""
     
+    if 'attempted_questions' not in st.session_state:
+        st.session_state.attempted_questions = {}
+
     # Ensure we don't run this function if data isn't loaded correctly
     if not st.session_state.quiz_questions:
         st.error("Quiz data not initialized. Please go back to setup.")
@@ -154,7 +201,15 @@ def render_quiz_page():
     # --- Header ---
     st.subheader("🧠 AI Concepts Quiz App")
     st.markdown(f"Quizzing on: **{', '.join(st.session_state.selected_chapters)}**")
-    st.markdown(f"Question **{current_index + 1}** of **{quiz_length}**")
+    
+    # Display Score if in Immediate Feedback Mode
+    if st.session_state.quiz_mode == 'Immediate-Feedback':
+        col1, col2 = st.columns([1, 2])
+        col1.metric("Current Score", f"{st.session_state.score} / {st.session_state.attempted}")
+        col2.markdown(f"Question **{current_index + 1}** of **{quiz_length}**")
+    else:
+        st.markdown(f"Question **{current_index + 1}** of **{quiz_length}**")
+    
     st.progress((current_index + 1) / quiz_length)
     st.markdown("---")
     
@@ -163,30 +218,66 @@ def render_quiz_page():
     st.write(current_q["question"])
     
     # --- Options (Radio Buttons) ---
-    
-    # Use the question index as the key to ensure the radio button state is unique
-    # The value selected is stored automatically by st.radio, we capture it below.
     selection = st.radio(
         "Select your answer:",
         current_q["options"],
         index=None, # Start with no selection
-        key=f"q_{current_index}_radio"
+        key=f"q_{current_index}_radio",
+        disabled=st.session_state.show_feedback and st.session_state.quiz_mode == 'Immediate-Feedback'
     )
     
-    # Manually store the selection in session_state immediately after radio changes
-    # This prevents the answer from being lost if the user navigates away or refreshes
+    # Manually store the selection
     st.session_state.last_selection = selection
 
     st.markdown("---")
-    
-    # --- Navigation Button ---
-    if current_index < quiz_length - 1:
-        # Next Question button
-        st.button("Next Question", on_click=record_answer, use_container_width=True, type="primary")
+
+    # --- Navigation and Feedback Logic ---
+
+    if st.session_state.quiz_mode == 'Immediate-Feedback':
+        # --- Immediate Feedback Mode ---
+        
+        if not st.session_state.show_feedback:
+            # Button to submit the answer and check it
+            st.button(
+                "Submit Answer", 
+                on_click=record_answer, 
+                use_container_width=True, 
+                type="primary",
+                disabled=selection is None
+            )
+        else:
+            # Display feedback
+            is_correct = (st.session_state.last_selection == current_q["correct_answer"])
+            
+            if is_correct:
+                st.success("✅ Correct! Great job.")
+            else:
+                st.error("❌ Incorrect.")
+                st.info(f"The correct answer was: **{current_q['correct_answer']}**")
+
+            # Button to move to the next question or results
+            button_label = "Show Results" if current_index == quiz_length - 1 else "Continue to Next Question"
+            
+            # Use secondary for continue button in immediate mode
+            st.button(
+                button_label, 
+                on_click=advance_question, 
+                use_container_width=True, 
+                type="secondary"
+            )
+
     else:
-        # Show Results button (Final question)
-        # FIX: Changed type="success" to type="primary"
-        st.button("Show Results", on_click=record_answer, use_container_width=True, type="primary")
+        # --- End-of-Quiz Mode (Original Behavior) ---
+        
+        # Button to move to the next question or results
+        button_label = "Show Results" if current_index == quiz_length - 1 else "Next Question"
+        
+        st.button(
+            button_label,
+            on_click=record_answer, # record_answer handles the advancement in this mode
+            use_container_width=True,
+            type="primary"
+        )
 
 
 def render_results_page():
@@ -198,30 +289,49 @@ def render_results_page():
     score = 0
     results_breakdown = []
     
-    # Calculate score
-    for i, question_data in enumerate(st.session_state.quiz_questions):
-        user_answer = st.session_state.user_answers.get(i)
-        correct_answer = question_data["correct_answer"]
+    # Calculate score (re-calculate in End-of-Quiz mode, or use cached score in Immediate mode)
+    if st.session_state.quiz_mode == 'End-of-Quiz':
+        for i, question_data in enumerate(st.session_state.quiz_questions):
+            user_answer = st.session_state.user_answers.get(i)
+            correct_answer = question_data["correct_answer"]
+            
+            is_correct = (user_answer == correct_answer)
+            
+            if is_correct:
+                score += 1
+            
+            results_breakdown.append({
+                "question": question_data["question"],
+                "user_answer": user_answer if user_answer is not None else "No Answer Selected",
+                "correct_answer": correct_answer,
+                "is_correct": is_correct
+            })
+    else: # Immediate-Feedback mode uses pre-calculated score/attempted
+        score = st.session_state.score
+        total_attempted = st.session_state.attempted
         
-        is_correct = (user_answer == correct_answer)
-        
-        if is_correct:
-            score += 1
-        
-        results_breakdown.append({
-            "question": question_data["question"],
-            "user_answer": user_answer if user_answer is not None else "No Answer Selected",
-            "correct_answer": correct_answer,
-            "is_correct": is_correct
-        })
+        # In Immediate-Feedback mode, rebuild breakdown for review
+        for i, question_data in enumerate(st.session_state.quiz_questions):
+            user_answer = st.session_state.user_answers.get(i)
+            correct_answer = question_data["correct_answer"]
+            is_correct = (user_answer == correct_answer)
+            
+            results_breakdown.append({
+                "question": question_data["question"],
+                "user_answer": user_answer if user_answer is not None else "No Answer Selected",
+                "correct_answer": correct_answer,
+                "is_correct": is_correct
+            })
+    
+    quiz_length = len(st.session_state.quiz_questions)
 
     # --- Score Summary ---
     st.subheader("Overall Performance")
     col1, col2, col3 = st.columns(3)
     
-    col1.metric("Total Questions", st.session_state.quiz_length)
+    col1.metric("Total Questions", quiz_length)
     col2.metric("Correct Answers", score)
-    col3.metric("Score", f"{(score / st.session_state.quiz_length) * 100:.1f}%")
+    col3.metric("Score", f"{(score / quiz_length) * 100:.1f}%" if quiz_length > 0 else "0.0%")
 
     st.markdown("---")
     
@@ -257,8 +367,10 @@ def main():
         render_results_page()
 
 if __name__ == "__main__":
-    # Ensure QA_DATA is defined (by importing from quiz_data.py) before running
-    if 'QA_DATA' not in globals():
-        st.error("Error: Could not find 'QA_DATA'. Please ensure 'quiz_data.py' is in the same directory and contains the dictionary.")
-    else:
+    # A simple check to ensure data is likely loaded, though the main error check is in the chat history
+    if 'QA_DATA' in globals() or 'QA_DATA' in st.session_state:
         main()
+    else:
+        # This fallback is unlikely to be hit if 'quiz_data.py' is present
+        initialize_session_state() 
+        render_setup_page()
