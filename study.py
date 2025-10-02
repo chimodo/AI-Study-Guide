@@ -1,5 +1,7 @@
 import streamlit as st
 import random
+import json
+import os
 from quiz_data import QA_DATA # Import the question data structure
 
 # --- Configuration ---
@@ -30,6 +32,42 @@ def initialize_session_state():
         st.session_state.score = 0
     if 'attempted' not in st.session_state:
         st.session_state.attempted = 0
+    if 'adaptive_mode' not in st.session_state:
+        st.session_state.adaptive_mode = False
+# --- Callback Functions ---
+
+# --- Adaptive Mode JSON File Utilities ---
+WRONG_QUESTIONS_FILE = "wrong_questions.json"
+
+def load_wrong_questions():
+    if not os.path.exists(WRONG_QUESTIONS_FILE):
+        return {}
+    with open(WRONG_QUESTIONS_FILE, "r") as f:
+        try:
+            return json.load(f)
+        except Exception:
+            return {}
+
+def save_wrong_questions(data):
+    with open(WRONG_QUESTIONS_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def add_wrong_question(chapter, question_data):
+    data = load_wrong_questions()
+    if chapter not in data:
+        data[chapter] = []
+    # Avoid duplicates
+    if not any(q["question"] == question_data["question"] for q in data[chapter]):
+        data[chapter].append(question_data)
+        save_wrong_questions(data)
+
+def remove_wrong_question(chapter, question_data):
+    data = load_wrong_questions()
+    if chapter in data:
+        data[chapter] = [q for q in data[chapter] if q["question"] != question_data["question"]]
+        if not data[chapter]:
+            del data[chapter]
+        save_wrong_questions(data)
 
 
 # --- Callback Functions ---
@@ -43,7 +81,7 @@ def start_quiz(selected_chapters, question_count, quiz_mode):
         st.error("Please select at least one chapter.")
         return
 
-    # 1. Gather all questions from selected chapters
+    # Gather all questions from selected chapters
     all_questions = []
     for chapter in selected_chapters:
         all_questions.extend(QA_DATA.get(chapter, []))
@@ -52,11 +90,26 @@ def start_quiz(selected_chapters, question_count, quiz_mode):
         st.error("No questions found for the selected chapters.")
         return
 
-    # 2. Select the specified number of questions randomly
-    count = min(question_count, len(all_questions))
-    st.session_state.quiz_questions = random.sample(all_questions, count)
+    # --- Adaptive Mode: Pull from wrong_questions.json first ---
+    quiz_questions = []
+    if st.session_state.adaptive_mode:
+        wrong_data = load_wrong_questions()
+        # Pull wrong questions for selected chapters
+        for chapter in selected_chapters:
+            quiz_questions.extend(wrong_data.get(chapter, []))
+        # Remove duplicates from all_questions
+        wrong_questions_set = set(q["question"] for q in quiz_questions)
+        remaining_questions = [q for q in all_questions if q["question"] not in wrong_questions_set]
+        # Fill up to question_count
+        count = min(question_count, len(quiz_questions) + len(remaining_questions))
+        quiz_questions = quiz_questions[:question_count]
+        if len(quiz_questions) < count:
+            quiz_questions += random.sample(remaining_questions, count - len(quiz_questions))
+    else:
+        count = min(question_count, len(all_questions))
+        quiz_questions = random.sample(all_questions, count)
 
-    # 3. Reset quiz state and transition to quiz page
+    st.session_state.quiz_questions = quiz_questions
     st.session_state.current_index = 0
     st.session_state.user_answers = {}
     st.session_state.quiz_length = len(st.session_state.quiz_questions)
@@ -70,30 +123,38 @@ def start_quiz(selected_chapters, question_count, quiz_mode):
 def record_answer():
     """Records the user's selected answer and shows feedback (if immediate mode)."""
     current_q_index = st.session_state.current_index
-    
     # Check if the user selected an answer
     if st.session_state.last_selection is None:
         st.warning("Please select an answer before proceeding.")
         return
-        
     # Record the answer
     st.session_state.user_answers[current_q_index] = st.session_state.last_selection
-    
+
+    # --- Adaptive Mode: Update wrong_questions.json ---
+    current_q = st.session_state.quiz_questions[current_q_index]
+    # Find chapter for current question
+    chapter = None
+    for ch in st.session_state.selected_chapters:
+        if any(q["question"] == current_q["question"] for q in QA_DATA.get(ch, [])):
+            chapter = ch
+            break
+    is_correct = (st.session_state.last_selection == current_q["correct_answer"])
+    if chapter:
+        if not is_correct:
+            add_wrong_question(chapter, current_q)
+        else:
+            remove_wrong_question(chapter, current_q)
+
     if st.session_state.quiz_mode == 'Immediate-Feedback':
         # Show feedback for the current question
         st.session_state.show_feedback = True
-        
         # Update score immediately for display purposes
-        current_q = st.session_state.quiz_questions[current_q_index]
-        is_correct = (st.session_state.last_selection == current_q["correct_answer"])
-        
         # Only update the score if it hasn't been attempted yet (to prevent re-scoring)
         if current_q_index not in st.session_state.attempted_questions:
             st.session_state.attempted_questions[current_q_index] = True
             st.session_state.attempted += 1
             if is_correct:
                 st.session_state.score += 1
-
     else:
         # End-of-Quiz mode: just advance to the next question/results
         advance_question()
@@ -128,7 +189,7 @@ def render_setup_page():
     st.markdown("---")
 
     all_chapters = list(QA_DATA.keys())
-    
+
     # Chapter selection checkboxes
     st.subheader("1. Select Chapters")
     chapters_selection = st.multiselect(
@@ -138,8 +199,17 @@ def render_setup_page():
         key="setup_chapter_select"
     )
 
+    # Adaptive Mode toggle
+    st.subheader("2. Adaptive Mode")
+    adaptive_mode = st.checkbox(
+        "Enable Adaptive Mode (focus on questions you got wrong)",
+        value=st.session_state.adaptive_mode,
+        key="setup_adaptive_mode"
+    )
+    st.session_state.adaptive_mode = adaptive_mode
+
     # Quiz Mode selection
-    st.subheader("2. Select Quiz Mode")
+    st.subheader("3. Select Quiz Mode")
     quiz_mode = st.radio(
         "How do you want to receive feedback?",
         options=['End-of-Quiz', 'Immediate-Feedback'],
@@ -147,12 +217,18 @@ def render_setup_page():
         key="setup_quiz_mode",
         help="End-of-Quiz: Results shown only after the last question. Immediate-Feedback: Results shown right after you answer each question."
     )
-    
+
     # Question count slider
-    max_questions = sum(len(QA_DATA.get(c, [])) for c in chapters_selection)
-    
-    st.subheader(f"3. Choose Quiz Length (Max: {max_questions})")
-    
+    if adaptive_mode:
+        wrong_data = load_wrong_questions()
+        wrong_count = sum(len(wrong_data.get(c, [])) for c in chapters_selection)
+        main_count = sum(len(QA_DATA.get(c, [])) for c in chapters_selection)
+        max_questions = min(main_count, wrong_count + main_count)
+    else:
+        max_questions = sum(len(QA_DATA.get(c, [])) for c in chapters_selection)
+
+    st.subheader(f"4. Choose Quiz Length (Max: {max_questions})")
+
     # Set default slider value based on previous session state or a sensible default
     initial_count = st.session_state.question_count
     if initial_count > max_questions and max_questions > 0:
@@ -169,9 +245,9 @@ def render_setup_page():
         key="setup_count_slider",
         disabled=(max_questions == 0)
     )
-    
+
     st.markdown("---")
-    
+
     # Start button
     st.button(
         "Start Quiz",

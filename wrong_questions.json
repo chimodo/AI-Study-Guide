@@ -1,0 +1,40 @@
+{
+  "Chapter 3 - Search Algorithms in AI": [
+    {
+      "question": "DFS requires more memory than BFS.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "correct_answer": "False"
+    },
+    {
+      "question": "If a heuristic is admissible, it must also be consistent.",
+      "options": [
+        "True",
+        "False"
+      ],
+      "correct_answer": "False"
+    },
+    {
+      "question": "Which statement accurately compares search algorithms?",
+      "options": [
+        "DFS is always faster than BFS, but less memory efficient.",
+        "GBFS is complete and optimal with any heuristic.",
+        "BFS = complete, optimal for unit costs; DFS = memory efficient; GBFS = fast, not optimal; A* = complete & optimal with admissible heuristics.",
+        "A* is only complete if its heuristic is non-admissible."
+      ],
+      "correct_answer": "BFS = complete, optimal for unit costs; DFS = memory efficient; GBFS = fast, not optimal; A* = complete & optimal with admissible heuristics."
+    },
+    {
+      "question": "A blind search that expands nodes without domain-specific knowledge is called:",
+      "options": [
+        "Informed search",
+        "Uninformed search",
+        "Heuristic search",
+        "A* search"
+      ],
+      "correct_answer": "Uninformed search"
+    }
+  ]
+}
